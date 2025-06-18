@@ -29,8 +29,12 @@ DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
 CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
+    'http://localhost:5173',  
+    'http://localhost:3000',  # React dev server (si différent)
+    'http://localhost:8080',  # Autres ports possibles
 ]
+
+CORS_ALLOW_CREDENTIALS = True
 
 
 # Application definition
@@ -76,7 +80,18 @@ REST_FRAMEWORK = {
         'rest_framework.renderers.JSONRenderer',
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 20
+    'PAGE_SIZE': 20,
+    # AJOUTS pour le système de paiement
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle'
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/hour',
+        'user': '1000/hour',
+        'payment_create': '100/minute',
+        'payment_confirm': '50/minute',
+    },
 }
 
 # Email Configuration (Update with your email settings)
@@ -163,3 +178,120 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# Frontend URLs (ajoutez ces variables)
+FRONTEND_URL = 'http://localhost:5173'  # Votre URL React
+API_BASE_URL = 'http://localhost:8000'  # Votre URL Django
+
+# Payment Gateway Configuration
+PAYMENT_GATEWAY = {
+    'TRANSACTION_FEE_PERCENTAGE': 2.0,  # 2% fee
+    'MINIMUM_AMOUNT': 10.0,  # Minimum transaction amount
+    'MAXIMUM_AMOUNT': 1000000.0,  # Maximum transaction amount
+    'SESSION_TIMEOUT_MINUTES': 30,  # Payment session timeout
+    'OTP_EXPIRY_MINUTES': 5,  # OTP expiry time
+    'DEFAULT_CURRENCY': 'MRU',  # Mauritanian Ouguiya
+    'SUPPORTED_CURRENCIES': ['MRU', 'USD', 'EUR'],
+    'WEBHOOK_RETRY_ATTEMPTS': 3,
+    'WEBHOOK_RETRY_DELAY_SECONDS': 60,
+}
+
+
+# Bank API Configuration (simulées pour le développement)
+BANK_APIS = {
+    'bankily': {
+        'base_url': 'https://api.bankily.mr/v1',
+        'api_key': 'test_bankily_key',
+        'api_secret': 'test_bankily_secret',
+        'timeout': 30,
+    },
+    'sedad': {
+        'base_url': 'https://api.sedad.mr/v1',
+        'api_key': 'test_sedad_key',
+        'api_secret': 'test_sedad_secret',
+        'timeout': 30,
+    },
+    'bimbank': {
+        'base_url': 'https://api.bimbank.mr/v2',
+        'api_key': 'test_bimbank_key',
+        'api_secret': 'test_bimbank_secret',
+        'timeout': 30,
+    },
+    'paypal': {
+        'base_url': 'https://api.sandbox.paypal.com',
+        'client_id': 'your-paypal-client-id',
+        'client_secret': 'your-paypal-client-secret',
+        'timeout': 30,
+    },
+    'stripe': {
+        'base_url': 'https://api.stripe.com/v1',
+        'api_key': 'sk_test_your_stripe_secret_key',
+        'timeout': 30,
+    },
+    'mtn_mobile_money': {
+        'base_url': 'https://api.mtn.mr/mobilemoney/v1',
+        'api_key': 'test_mtn_key',
+        'api_secret': 'test_mtn_secret',
+        'timeout': 30,
+    }
+}
+
+# ! no need i think just in case
+# Cache Configuration (optionnel - pour Redis si vous l'installez plus tard)
+# CACHES = {
+#     'default': {
+#         'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+#         'LOCATION': 'unique-snowflake',
+#     }
+# }
+
+# Celery Configuration (optionnel - pour plus tard)
+# CELERY_BROKER_URL = 'redis://localhost:6379/0'
+# CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+# CELERY_ACCEPT_CONTENT = ['json']
+# CELERY_TASK_SERIALIZER = 'json'
+# CELERY_RESULT_SERIALIZER = 'json'
+# CELERY_TIMEZONE = 'UTC'
+
+
+# Logging Configuration
+import os
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+        'file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs', 'nextremitly.log'),
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'payment_gateway': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+    },
+}
+
+# Créer le dossier logs s'il n'existe pas
+os.makedirs(os.path.join(BASE_DIR, 'logs'), exist_ok=True)

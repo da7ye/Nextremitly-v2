@@ -3,7 +3,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
-from .models import CustUser, Buyer, Merchant
+from .models import CustUser, Buyer, Merchant, WalletVerificationOTP
 import random
 import string
 
@@ -165,3 +165,263 @@ class ResendOTPSerializer(serializers.Serializer):
         ('verification', 'Account Verification'),
         ('password_reset', 'Password Reset'),
     ], default='verification')
+
+
+
+#! Nextremitly Serializers:
+# payment_serializers.py - Add these to your serializers.py file
+
+
+from rest_framework import serializers
+from .models import (
+    WalletProvider, MerchantWallet, PaymentSession, 
+    Transaction, PaymentOTP, APIKey
+)
+import uuid
+from decimal import Decimal
+
+
+class WalletProviderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WalletProvider
+        fields = ['id', 'name', 'display_name', 'logo_url', 'is_active', 'supports_otp']
+
+
+class MerchantWalletSerializer(serializers.ModelSerializer):
+    provider = WalletProviderSerializer(read_only=True)
+    provider_id = serializers.IntegerField(write_only=True)
+    
+    class Meta:
+        model = MerchantWallet
+        fields = [
+            'id', 'provider', 'provider_id', 'wallet_id', 'wallet_name', 
+            'is_active', 'is_primary', 'created_at'
+        ]
+        read_only_fields = ['created_at']
+    
+    def validate(self, attrs):
+        # Ensure only one primary wallet per merchant
+        if attrs.get('is_primary'):
+            merchant = self.context['request'].user
+            if MerchantWallet.objects.filter(merchant=merchant, is_primary=True).exclude(id=self.instance.id if self.instance else None).exists():
+                raise serializers.ValidationError("Only one wallet can be set as primary")
+        return attrs
+
+
+class PaymentSessionCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating payment sessions via API"""
+    
+    class Meta:
+        model = PaymentSession
+        fields = [
+            'amount', 'currency', 'description', 'customer_email', 
+            'customer_phone', 'success_url', 'cancel_url', 'webhook_url', 'metadata'
+        ]
+    
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be greater than zero")
+        if value > Decimal('1000000'):  # 1 million limit
+            raise serializers.ValidationError("Amount exceeds maximum limit")
+        return value
+    
+    def validate(self, attrs):
+        # Validate URLs
+        for url_field in ['success_url', 'cancel_url', 'webhook_url']:
+            url = attrs.get(url_field)
+            if url and not url.startswith(('http://', 'https://')):
+                raise serializers.ValidationError(f"{url_field} must be a valid URL")
+        return attrs
+
+
+class PaymentSessionSerializer(serializers.ModelSerializer):
+    """Serializer for displaying payment session details"""
+    merchant_name = serializers.CharField(source='merchant.business_name', read_only=True)
+    selected_wallet = MerchantWalletSerializer(read_only=True)
+    is_expired = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = PaymentSession
+        fields = [
+            'session_id', 'merchant_name', 'amount', 'currency', 'description',
+            'customer_email', 'customer_phone', 'status', 'selected_wallet',
+            'customer_wallet_phone', 'created_at', 'expires_at', 'is_expired'
+        ]
+    
+    def get_is_expired(self, obj):
+        return obj.is_expired()
+
+
+class PaymentSessionUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for updating payment session during payment flow"""
+    
+    class Meta:
+        model = PaymentSession
+        fields = ['status', 'selected_wallet', 'customer_wallet_phone']
+    
+    def validate_status(self, value):
+        # Validate status transitions
+        current_status = self.instance.status if self.instance else None
+        
+        valid_transitions = {
+            'pending': ['authenticated', 'cancelled', 'expired'],
+            'authenticated': ['wallet_selected', 'cancelled'],
+            'wallet_selected': ['otp_sent', 'cancelled'],
+            'otp_sent': ['processing', 'cancelled'],
+            'processing': ['completed', 'failed'],
+            'completed': [],  # Final state
+            'failed': ['pending'],  # Can retry
+            'cancelled': [],  # Final state
+            'expired': [],  # Final state
+        }
+        
+        if current_status and value not in valid_transitions.get(current_status, []):
+            raise serializers.ValidationError(f"Cannot transition from {current_status} to {value}")
+        
+        return value
+
+
+class TransactionSerializer(serializers.ModelSerializer):
+    sender_name = serializers.CharField(source='sender.nom_complet', read_only=True)
+    receiver_name = serializers.CharField(source='receiver.nom_complet', read_only=True)
+    merchant_name = serializers.CharField(source='merchant.business_name', read_only=True)
+    sender_wallet_provider_name = serializers.CharField(source='sender_wallet_provider.display_name', read_only=True)
+    receiver_wallet_name = serializers.CharField(source='receiver_wallet.wallet_name', read_only=True)
+    
+    class Meta:
+        model = Transaction
+        fields = [
+            'transaction_id', 'transaction_type', 'amount', 'currency', 'fee_amount', 
+            'net_amount', 'status', 'description', 'sender_name', 'receiver_name',
+            'merchant_name', 'sender_wallet_provider_name', 'receiver_wallet_name',
+            'sender_wallet_phone', 'external_transaction_id', 'created_at', 
+            'completed_at', 'failure_reason'
+        ]
+        read_only_fields = [
+            'transaction_id', 'net_amount', 'external_transaction_id', 
+            'created_at', 'completed_at'
+        ]
+
+
+class PaymentOTPSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentOTP
+        fields = ['phone_number', 'created_at', 'is_expired']
+    
+    def get_is_expired(self, obj):
+        return obj.is_expired()
+
+
+class PaymentInitiateSerializer(serializers.Serializer):
+    """Serializer for initiating payment after wallet selection"""
+    phone_number = serializers.CharField(max_length=20)
+    
+    def validate_phone_number(self, value):
+        # Basic phone number validation
+        import re
+        if not re.match(r'^\+?[1-9]\d{1,14}$', value.replace(' ', '')):
+            raise serializers.ValidationError("Invalid phone number format")
+        return value
+
+
+class PaymentConfirmSerializer(serializers.Serializer):
+    """Serializer for confirming payment with OTP"""
+    otp_code = serializers.CharField(max_length=6)
+    phone_number = serializers.CharField(max_length=20)
+
+
+class APIKeySerializer(serializers.ModelSerializer):
+    key = serializers.CharField(read_only=True)
+    
+    class Meta:
+        model = APIKey
+        fields = [
+            'id', 'name', 'key_prefix', 'key', 'is_active', 'is_test_mode',
+            'can_create_sessions', 'can_view_transactions', 'can_refund',
+            'last_used_at', 'created_at'
+        ]
+        read_only_fields = ['key_prefix', 'key', 'last_used_at', 'created_at']
+
+
+# Dashboard serializers for merchant analytics
+class MerchantDashboardSerializer(serializers.Serializer):
+    """Serializer for merchant dashboard data"""
+    total_revenue = serializers.DecimalField(max_digits=12, decimal_places=2)
+    daily_revenue = serializers.DecimalField(max_digits=12, decimal_places=2)
+    pending_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    active_wallets_count = serializers.IntegerField()
+    total_transactions = serializers.IntegerField()
+    successful_transactions = serializers.IntegerField()
+    recent_transactions = TransactionSerializer(many=True)
+
+
+class BuyerDashboardSerializer(serializers.Serializer):
+    """Serializer for buyer dashboard data"""
+    total_spent = serializers.DecimalField(max_digits=12, decimal_places=2)
+    total_received = serializers.DecimalField(max_digits=12, decimal_places=2)
+    pending_transactions = serializers.IntegerField()
+    completed_transactions = serializers.IntegerField()
+    recent_transactions = TransactionSerializer(many=True)
+
+
+# Integration serializers for documentation
+class WebhookPayloadSerializer(serializers.Serializer):
+    """Serializer for webhook payload structure"""
+    session_id = serializers.UUIDField()
+    status = serializers.CharField()
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    currency = serializers.CharField()
+    transaction_id = serializers.UUIDField()
+    external_transaction_id = serializers.CharField()
+    completed_at = serializers.DateTimeField()
+    metadata = serializers.JSONField()
+
+
+class PaymentWidgetConfigSerializer(serializers.Serializer):
+    """Serializer for payment widget configuration"""
+    api_key = serializers.CharField()
+    session_id = serializers.UUIDField()
+    environment = serializers.ChoiceField(choices=['test', 'live'])
+    theme = serializers.ChoiceField(choices=['light', 'dark'], default='light')
+    language = serializers.ChoiceField(choices=['en', 'fr', 'ar'], default='en')
+
+
+# Add these serializers to your serializers.py file
+
+class WalletVerificationRequestSerializer(serializers.Serializer):
+    """Serializer for initiating wallet verification"""
+    provider_id = serializers.IntegerField()
+    wallet_id = serializers.CharField(max_length=100)
+    wallet_name = serializers.CharField(max_length=100)
+    is_active = serializers.BooleanField(default=True)
+    is_primary = serializers.BooleanField(default=False)
+    
+    def validate_wallet_id(self, value):
+        """Basic phone number validation"""
+        import re
+        # Remove spaces and validate format
+        clean_value = value.replace(' ', '')
+        if not re.match(r'^\+?[1-9]\d{1,14}$', clean_value):
+            raise serializers.ValidationError("Invalid phone number format")
+        return clean_value
+
+
+class WalletVerificationConfirmSerializer(serializers.Serializer):
+    """Serializer for confirming wallet verification with OTP"""
+    otp_code = serializers.CharField(max_length=6)
+    verification_id = serializers.UUIDField()
+
+
+class WalletVerificationOTPSerializer(serializers.ModelSerializer):
+    """Serializer for wallet verification OTP details"""
+    provider_name = serializers.CharField(source='wallet_provider.display_name', read_only=True)
+    
+    class Meta:
+        model = WalletVerificationOTP
+        fields = [
+            'id', 'wallet_id', 'wallet_name', 'provider_name', 
+            'verification_status', 'created_at', 'is_expired'
+        ]
+    
+    def get_is_expired(self, obj):
+        return obj.is_expired()

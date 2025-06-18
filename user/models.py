@@ -169,3 +169,303 @@ class OTP_User(OTPBase):
 #             self.password = make_password(self.password)
 #         super().save(*args, **kwargs)
 
+
+
+# Nextremitly Models:
+
+from django.db import models
+from django.contrib.auth import get_user_model
+from django.utils import timezone
+import uuid
+import secrets
+import string
+
+class WalletProvider(models.Model):
+    """Available wallet providers/banks"""
+    PROVIDER_CHOICES = [
+        ('bankily', 'Bankily'),
+        ('sedad', 'Sedad'),
+        ('bimbank', 'Bimbank'),
+        ('paypal', 'PayPal'),
+        ('stripe', 'Stripe'),
+        ('mtn_mobile_money', 'MTN Mobile Money'),
+    ]
+    
+    name = models.CharField(max_length=50, choices=PROVIDER_CHOICES, unique=True)
+    display_name = models.CharField(max_length=100)
+    logo_url = models.URLField(blank=True)
+    is_active = models.BooleanField(default=True)
+    api_endpoint = models.URLField(help_text="Bank's API endpoint for transactions")
+    supports_otp = models.BooleanField(default=True)
+    
+    def __str__(self):
+        return self.display_name
+    
+    class Meta:
+        verbose_name = "Wallet Provider"
+        verbose_name_plural = "Wallet Providers"
+
+
+class MerchantWallet(models.Model):
+    """Merchant's configured wallets for receiving payments"""
+    merchant = models.ForeignKey('Merchant', on_delete=models.CASCADE, related_name='wallets')
+    provider = models.ForeignKey(WalletProvider, on_delete=models.CASCADE)
+    wallet_id = models.CharField(max_length=100, help_text="Merchant's wallet ID/phone number with this provider")
+    wallet_name = models.CharField(max_length=100, help_text="Custom name for this wallet")
+    is_active = models.BooleanField(default=True)
+    is_primary = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        unique_together = ['merchant', 'provider', 'wallet_id']
+        verbose_name = "Merchant Wallet"
+        verbose_name_plural = "Merchant Wallets"
+    
+    def __str__(self):
+        return f"{self.merchant.business_name} - {self.provider.display_name}"
+
+
+class PaymentSession(models.Model):
+    """Payment session created by ecommerce when user proceeds to checkout"""
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('authenticated', 'User Authenticated'),
+        ('wallet_selected', 'Wallet Selected'),
+        ('otp_sent', 'OTP Sent'),
+        ('processing', 'Processing Payment'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('cancelled', 'Cancelled'),
+        ('expired', 'Expired'),
+    ]
+    
+    session_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    merchant = models.ForeignKey('Merchant', on_delete=models.CASCADE, related_name='payment_sessions')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3, default='MRU')  # Mauritanian Ouguiya
+    description = models.TextField(blank=True)
+    customer_email = models.EmailField(blank=True)
+    customer_phone = models.CharField(max_length=20, blank=True)
+    
+    # Ecommerce callback URLs
+    success_url = models.URLField(help_text="URL to redirect after successful payment")
+    cancel_url = models.URLField(help_text="URL to redirect after cancelled payment")
+    webhook_url = models.URLField(blank=True, help_text="URL to receive payment status updates")
+    
+    # Payment flow tracking
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    authenticated_user = models.ForeignKey(CustUser, on_delete=models.SET_NULL, null=True, blank=True)
+    selected_wallet = models.ForeignKey(MerchantWallet, on_delete=models.SET_NULL, null=True, blank=True)
+    customer_wallet_phone = models.CharField(max_length=20, blank=True, help_text="Customer's wallet phone number")
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField()
+    completed_at = models.DateTimeField(null=True, blank=True)
+    
+    # Metadata
+    metadata = models.JSONField(default=dict, blank=True, help_text="Additional data from ecommerce")
+    
+    def save(self, *args, **kwargs):
+        if not self.expires_at:
+            # Session expires in 30 minutes
+            self.expires_at = timezone.now() + timezone.timedelta(minutes=30)
+        super().save(*args, **kwargs)
+    
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+    
+    def __str__(self):
+        return f"Payment {self.session_id} - {self.merchant.business_name} - {self.amount} {self.currency}"
+    
+    class Meta:
+        verbose_name = "Payment Session"
+        verbose_name_plural = "Payment Sessions"
+
+
+class Transaction(models.Model):
+    """Individual transaction record"""
+    TRANSACTION_TYPES = [
+        ('payment', 'Payment'),
+        ('refund', 'Refund'),
+        ('transfer', 'Transfer'),
+    ]
+    
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('processing', 'Processing'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('cancelled', 'Cancelled'),
+        ('refunded', 'Refunded'),
+    ]
+    
+    transaction_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    payment_session = models.ForeignKey(PaymentSession, on_delete=models.CASCADE, related_name='transactions')
+    transaction_type = models.CharField(max_length=20, choices=TRANSACTION_TYPES, default='payment')
+    
+    # Parties involved
+    sender = models.ForeignKey(CustUser, on_delete=models.SET_NULL, null=True, related_name='sent_transactions')
+    receiver = models.ForeignKey(CustUser, on_delete=models.SET_NULL, null=True, related_name='received_transactions')
+    merchant = models.ForeignKey('Merchant', on_delete=models.CASCADE, related_name='transactions')
+    
+    # Transaction details
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3, default='MRU')
+    fee_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    net_amount = models.DecimalField(max_digits=12, decimal_places=2)  # amount - fee
+    
+    # Wallet information
+    sender_wallet_provider = models.ForeignKey(WalletProvider, on_delete=models.SET_NULL, null=True, related_name='sender_transactions')
+    sender_wallet_phone = models.CharField(max_length=20)
+    receiver_wallet = models.ForeignKey(MerchantWallet, on_delete=models.SET_NULL, null=True)
+    
+    # Bank/Provider response
+    external_transaction_id = models.CharField(max_length=255, blank=True, help_text="Transaction ID from bank/provider")
+    provider_response = models.JSONField(default=dict, blank=True)
+    
+    # Status tracking
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    failure_reason = models.TextField(blank=True)
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    
+    # Metadata
+    description = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    
+    def save(self, *args, **kwargs):
+        if not self.net_amount:
+            self.net_amount = self.amount - self.fee_amount
+        super().save(*args, **kwargs)
+    
+    def __str__(self):
+        return f"Transaction {self.transaction_id} - {self.amount} {self.currency}"
+    
+    class Meta:
+        verbose_name = "Transaction"
+        verbose_name_plural = "Transactions"
+        ordering = ['-created_at']
+
+
+class PaymentOTP(OTPBase):
+    """OTP for payment transactions"""
+    payment_session = models.ForeignKey(PaymentSession, on_delete=models.CASCADE, related_name='otps')
+    phone_number = models.CharField(max_length=20)
+    
+    def __str__(self):
+        return f"Payment OTP for session {self.payment_session.session_id}"
+    
+    class Meta:
+        verbose_name = "Payment OTP"
+        verbose_name_plural = "Payment OTPs"
+
+
+class WebhookLog(models.Model):
+    """Log of webhook calls to ecommerce"""
+    payment_session = models.ForeignKey(PaymentSession, on_delete=models.CASCADE, related_name='webhook_logs')
+    webhook_url = models.URLField()
+    payload = models.JSONField()
+    response_status = models.IntegerField(null=True)
+    response_body = models.TextField(blank=True)
+    sent_at = models.DateTimeField(auto_now_add=True)
+    success = models.BooleanField(default=False)
+    retry_count = models.IntegerField(default=0)
+    
+    class Meta:
+        verbose_name = "Webhook Log"
+        verbose_name_plural = "Webhook Logs"
+
+
+class APIKey(models.Model):
+    """API keys for merchants to integrate with the payment gateway"""
+    merchant = models.ForeignKey('Merchant', on_delete=models.CASCADE, related_name='api_keys')
+    name = models.CharField(max_length=100, help_text="Descriptive name for this API key")
+    key_prefix = models.CharField(max_length=10, editable=False)
+    key_hash = models.CharField(max_length=255, editable=False)
+    is_active = models.BooleanField(default=True)
+    is_test_mode = models.BooleanField(default=True, help_text="Whether this key is for testing")
+    
+    # Permissions
+    can_create_sessions = models.BooleanField(default=True)
+    can_view_transactions = models.BooleanField(default=True)
+    can_refund = models.BooleanField(default=False)
+    
+    # Usage tracking
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+        
+        # In your models.py, update the APIKey model's generate_key method:
+
+    def generate_key(self):
+        """Generate a new API key"""
+        import secrets
+        import string
+        from django.contrib.auth.hashers import make_password
+        
+        # Generate a random key
+        alphabet = string.ascii_letters + string.digits
+        key = ''.join(secrets.choice(alphabet) for _ in range(32))
+        
+        # Store prefix for display
+        self.key_prefix = key[:8]
+        
+        # Hash the full key for storage
+        self.key_hash = make_password(key)
+        
+        # Save the updated instance
+        self.save()
+        
+        # Return the full key with prefix
+        full_key = f"nxt_{'test' if self.is_test_mode else 'live'}_{key}"
+        
+        print(f"Full generated key: {full_key}")  # Debug print
+        return full_key
+
+    def check_key(self, provided_key):
+        """Check if provided key matches this API key"""
+        from django.contrib.auth.hashers import check_password
+        
+        print(f"Checking key: {provided_key}")  # Debug print
+        print(f"Expected prefix: nxt_{'test' if self.is_test_mode else 'live'}_")  # Debug print
+        
+        # Extract the key part after the prefix
+        if provided_key.startswith(f"nxt_{'test' if self.is_test_mode else 'live'}_"):
+            key_part = provided_key.split('_', 2)[-1]  # Get the part after "nxt_test_" or "nxt_live_"
+            print(f"Extracted key part: {key_part}")  # Debug print
+            return check_password(key_part, self.key_hash)
+        
+        return False
+    
+    class Meta:
+        verbose_name = "API Key"
+        verbose_name_plural = "API Keys"
+
+
+
+# Add this class to your models.py file after the PaymentOTP class
+
+class WalletVerificationOTP(OTPBase):
+    """OTP for wallet verification"""
+    merchant = models.ForeignKey('Merchant', on_delete=models.CASCADE, related_name='wallet_otps')
+    wallet_provider = models.ForeignKey(WalletProvider, on_delete=models.CASCADE)
+    wallet_id = models.CharField(max_length=100, help_text="Wallet ID/phone number being verified")
+    wallet_name = models.CharField(max_length=100, help_text="Custom name for this wallet")
+    is_active = models.BooleanField(default=True)
+    is_primary = models.BooleanField(default=False)
+    verification_status = models.CharField(max_length=20, choices=[
+        ('pending', 'Pending Verification'),
+        ('verified', 'Verified'),
+        ('failed', 'Verification Failed'),
+    ], default='pending')
+    
+    def __str__(self):
+        return f"Wallet OTP for {self.merchant.business_name} - {self.wallet_provider.display_name}"
+
+    class Meta:
+        verbose_name = "Wallet Verification OTP"
+        verbose_name_plural = "Wallet Verification OTPs"
