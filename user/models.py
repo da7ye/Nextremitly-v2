@@ -447,7 +447,6 @@ class APIKey(models.Model):
 
 
 
-# Add this class to your models.py file after the PaymentOTP class
 
 class WalletVerificationOTP(OTPBase):
     """OTP for wallet verification"""
@@ -469,3 +468,95 @@ class WalletVerificationOTP(OTPBase):
     class Meta:
         verbose_name = "Wallet Verification OTP"
         verbose_name_plural = "Wallet Verification OTPs"
+
+class QRCode(models.Model):
+    """QR Code pour paiements directs en magasin"""
+    qr_type = models.CharField(max_length=20, choices=[
+        ('static', 'Statique'),
+        ('dynamic', 'Dynamique')
+    ])
+    
+    STATUS_CHOICES = [
+        ('active', 'Actif'),
+        ('inactive', 'Inactif'),
+        ('expired', 'Expiré'),
+    ]
+    fixed_amount = models.DecimalField(
+        max_digits=12, 
+        decimal_places=2, 
+        null=True, 
+        blank=True,
+       
+    )
+    id = models.CharField(max_length=50, primary_key=True, unique=True)
+    merchant = models.ForeignKey(Merchant, on_delete=models.CASCADE, related_name='qr_codes')
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    scans_count = models.IntegerField(default=0)
+    total_revenue = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    
+    class Meta:
+        db_table = 'nextremitly_qrcodes'
+        ordering = ['-created_at']
+        verbose_name = "QR Code"
+        verbose_name_plural = "QR Codes"
+    
+    def __str__(self):
+        return f"{self.name} ({self.id})"
+    
+    def save(self, *args, **kwargs):
+        if not self.id:
+            self.id = f"qr_{uuid.uuid4().hex[:8]}"
+        super().save(*args, **kwargs)
+    
+    @property
+    def qr_url(self):
+        return f"https://nextremitly.com/qr/{self.id}"
+    
+    @property
+    def is_valid(self):
+        if self.status != 'active':
+            return False
+        if self.expires_at and self.expires_at < timezone.now():
+            return False
+        return True
+
+
+class QRPaymentSession(PaymentSession):
+    """Extension de PaymentSession pour les paiements QR"""
+    qr_code = models.ForeignKey(QRCode, on_delete=models.CASCADE, related_name='payment_sessions')
+    
+    class Meta:
+        verbose_name = "QR Payment Session"
+        verbose_name_plural = "QR Payment Sessions"
+    def is_expired(self):
+  
+      if not self.expires_at:
+        return False
+      return timezone.now() > self.expires_at
+
+# Dans la classe PaymentSession, assurez-vous que cette méthode existe :
+    def is_expired(self):
+     """Vérifier si la session a expiré"""
+     if not self.expires_at:
+        return False
+     return timezone.now() > self.expires_at
+
+
+class QRPaymentOTP(OTPBase):
+    """OTP pour paiements QR"""
+    qr_payment_session = models.ForeignKey(QRPaymentSession, on_delete=models.CASCADE, related_name='qr_otps')
+    phone_number = models.CharField(max_length=20)
+    wallet_provider = models.ForeignKey(WalletProvider, on_delete=models.CASCADE)
+    
+    def __str__(self):
+        return f"QR Payment OTP for session {self.qr_payment_session.session_id}"
+    
+    class Meta:
+        verbose_name = "QR Payment OTP"
+        verbose_name_plural = "QR Payment OTPs"
+

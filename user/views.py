@@ -1,4 +1,5 @@
 # views.py
+from jsonschema import ValidationError
 from rest_framework import status, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -16,10 +17,15 @@ from .serializers import (
     MerchantProfileSerializer, PasswordChangeSerializer,
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
     EmailVerificationSerializer, ResendOTPSerializer
+
 )
+from django.db.models import Sum, Count
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny,IsAuthenticated
+from django.shortcuts import get_object_or_404
 import random
 import string
-
+from rest_framework import generics
 
 def generate_otp():
     """Generate a 6-digit OTP code"""
@@ -381,8 +387,7 @@ def user_status(request):
     })
 
 
-#! Nextremitly views:
-# payment_views.py - Add these views to your views.py file
+
 
 from rest_framework import status, permissions
 from rest_framework.decorators import api_view, permission_classes
@@ -429,7 +434,6 @@ class WalletProviderListView(ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
 
-# In your views.py (payment views section)
 
 class MerchantWalletListCreateView(ListCreateAPIView):
     """List and create merchant wallets"""
@@ -466,7 +470,7 @@ class MerchantWalletDetailView(RetrieveUpdateDestroyAPIView):
 # PAYMENT SESSION MANAGEMENT (FOR ECOMMERCE INTEGRATION)
 # ============================================================================
 
-# In your views.py, update the PaymentSessionCreateAPIView class:
+
 
 class PaymentSessionCreateAPIView(APIView):
     """Create payment session - used by ecommerce platforms"""
@@ -1084,15 +1088,7 @@ class TransactionDetailView(APIView):
             return Response({'error': 'Transaction not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
-# ============================================================================
-# API KEY MANAGEMENT
-# ============================================================================
 
-# In your views.py, update the APIKeyListCreateView:
-
-# In your views.py, update the APIKeyListCreateView perform_create method:
-
-# In your views.py, update the APIKeyListCreateView:
 
 class APIKeyListCreateView(ListCreateAPIView):
     """List and create API keys for merchants"""
@@ -1217,9 +1213,6 @@ def payment_widget_config(request, session_id):
     except PaymentSession.DoesNotExist:
         return Response({'error': 'Session not found'}, status=status.HTTP_404_NOT_FOUND)
     
-
-# Add these views to your views.py file
-# Add these views to your views.py file
 
 from .models import WalletVerificationOTP
 from .serializers import WalletVerificationRequestSerializer, WalletVerificationConfirmSerializer, WalletVerificationOTPSerializer
@@ -1481,3 +1474,468 @@ class WalletVerificationStatusView(APIView):
             return Response(serializer.data)
         except Merchant.DoesNotExist:
             return Response({'error': 'Merchant account not found'}, status=status.HTTP_400_BAD_REQUEST)
+        
+
+
+
+
+from .models import QRCode, QRPaymentSession, QRPaymentOTP  # Vos nouveaux modèles
+from .serializers import (
+    QRCodeSerializer, QRCodeStatsSerializer, QRPaymentInitiateSerializer,
+    QRPaymentSessionSerializer, QRPaymentOTPVerifySerializer
+)
+import random
+import string
+
+
+
+class QRCodeListCreateView(generics.ListCreateAPIView):
+    serializer_class = QRCodeSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        if self.request.user.user_type == 'merchant':
+            try:
+                merchant = Merchant.objects.get(id=self.request.user.id)
+                queryset = QRCode.objects.filter(merchant=merchant)
+                print(f"🔍 Backend: Found {queryset.count()} QR codes for merchant {merchant.id}")
+                for qr in queryset:
+                    print(f"  - {qr.name} ({qr.id})")
+                return queryset
+            except Merchant.DoesNotExist:
+                print("❌ Backend: Merchant not found")
+                return QRCode.objects.none()
+        print("❌ Backend: User is not merchant")
+        return QRCode.objects.none()
+    
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        
+        print(f"🔍 Backend: Serialized data: {serializer.data}")
+        print(f"🔍 Backend: Data type: {type(serializer.data)}")
+        print(f"🔍 Backend: Data length: {len(serializer.data) if isinstance(serializer.data, list) else 'not a list'}")
+        
+        return Response(serializer.data)
+
+
+
+
+class QRCodeDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET: Détails d'un QR code
+    PUT/PATCH: Modifier un QR code
+    DELETE: Supprimer un QR code
+    """
+    serializer_class = QRCodeSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_field = 'id'
+
+    def get_queryset(self):
+        """Ne retourne que les QR codes du merchant connecté"""
+        if self.request.user.user_type != 'merchant':
+            return QRCode.objects.none()
+        return QRCode.objects.filter(merchant=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        try:
+            instance = self.get_object()
+            qr_id = instance.id
+            merchant_id = request.user.id
+
+            # Journalisation avant suppression
+            print(f"🗑️ Tentative suppression QR {qr_id} par merchant {merchant_id}")
+
+            # Suppression effective
+            self.perform_destroy(instance)
+            
+            print(f"✅ QR {qr_id} supprimé avec succès")
+
+            return Response(
+                {
+                    "success": True,
+                    "message": "QR code supprimé avec succès",
+                    "deleted_id": qr_id,
+                },
+                status=status.HTTP_200_OK
+            )
+
+        except QRCode.DoesNotExist:
+            print(f"❌ QR code introuvable lors de la suppression")
+            return Response(
+                {"error": "QR code introuvable"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        except Exception as e:
+            print(f"❌ Erreur suppression QR code: {str(e)}")
+            return Response(
+                {"error": "Une erreur est survenue lors de la suppression"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def qr_code_stats(request):
+    """
+    GET: Statistiques des QR codes du merchant
+    """
+    if request.user.user_type != 'merchant':
+        return Response({'error': 'Accès reservé aux merchants'}, status=status.HTTP_403_FORBIDDEN)
+    
+    try:
+        merchant = Merchant.objects.get(id=request.user.id)
+        user_qr_codes = QRCode.objects.filter(merchant=merchant)
+        
+        stats = {
+            'total_qrs': user_qr_codes.count(),
+            'active_qrs': user_qr_codes.filter(status='active').count(),
+            'total_scans': user_qr_codes.aggregate(Sum('scans_count'))['scans_count__sum'] or 0,
+            'total_revenue': user_qr_codes.aggregate(Sum('total_revenue'))['total_revenue__sum'] or 0
+        }
+        
+        serializer = QRCodeStatsSerializer(stats)
+        return Response(serializer.data)
+    except Merchant.DoesNotExist:
+        return Response({'error': 'Merchant non trouvé'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def public_qr_detail(request, qr_id):
+    """
+    GET: Récupérer les détails publics d'un QR code (pour scan)
+    """
+    try:
+        print(f"🔍 Recherche QR Code: {qr_id}")
+        qr_code = get_object_or_404(QRCode, id=qr_id)
+        
+        print(f"✅ QR Code trouvé: {qr_code.name} - Type: {qr_code.qr_type}")
+        
+        if not qr_code.is_valid:
+            print(f"⚠️ QR Code invalide: {qr_code.status}")
+            return Response({
+                'error': 'QR Code invalide ou expiré',
+                'is_valid': False
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Incrémenter le compteur de scans
+        qr_code.scans_count += 1
+        qr_code.save()
+        
+        data = {
+            'id': qr_code.id,
+            'merchant_name': qr_code.merchant.business_name or qr_code.merchant.nom_complet,
+            'merchant_id': qr_code.merchant.id,
+            'qr_type': qr_code.qr_type,  # ✅ AJOUT
+            'fixed_amount': float(qr_code.fixed_amount) if qr_code.fixed_amount else None,  # ✅ AJOUT
+            'description': qr_code.description,  # ✅ AJOUT
+            'is_valid': True,
+            'is_active': qr_code.status == 'active'
+        }
+        
+        print(f"✅ Données retournées: {data}")
+        return Response(data)
+        
+    except QRCode.DoesNotExist:
+        print(f"❌ QR Code non trouvé: {qr_id}")
+        return Response({
+            'error': 'QR Code introuvable',
+            'is_valid': False
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        print(f"❌ Erreur inattendue: {e}")
+        return Response({
+            'error': 'Erreur serveur',
+            'is_valid': False
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def initiate_qr_payment(request, qr_id):
+    """
+    POST: Initier un paiement via QR code (statique ou dynamique)
+    """
+    try:
+        qr_code = get_object_or_404(QRCode, id=qr_id)
+        
+        if not qr_code.is_valid:
+            return Response({
+                'error': 'QR Code invalide ou expiré'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        serializer = QRPaymentInitiateSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            # ✅ LOGIQUE DIFFÉRENTE SELON LE TYPE DE QR
+            if qr_code.qr_type == 'static':
+                # Pour QR statique : utiliser le montant fixe du QR code
+                if qr_code.fixed_amount is None:
+                    return Response({
+                        'error': 'Ce QR code statique n\'a pas de montant défini'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                
+                amount = qr_code.fixed_amount
+                print(f"💰 QR Statique - Montant fixe utilisé: {amount} MRU")
+                
+            else:
+                # Pour QR dynamique : utiliser le montant fourni par le client
+                amount = serializer.validated_data.get('amount')
+                if not amount:
+                    return Response({
+                        'error': 'Le montant est requis pour un QR code dynamique'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                
+                if amount <= 0:
+                    return Response({
+                        'error': 'Le montant doit être supérieur à 0'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                
+                if amount > 1000000:
+                    return Response({
+                        'error': 'Le montant ne peut pas dépasser 1 000 000 MRU'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                
+                print(f"💰 QR Dynamique - Montant client: {amount} MRU")
+            
+            # Récupérer le wallet provider
+            try:
+                wallet_provider = WalletProvider.objects.get(
+                    name=serializer.validated_data['wallet_type'],
+                    is_active=True
+                )
+            except WalletProvider.DoesNotExist:
+                return Response({
+                    'error': 'Portefeuille non supporté'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Créer une session de paiement QR
+            payment_session = QRPaymentSession.objects.create(
+                qr_code=qr_code,
+                merchant=qr_code.merchant,
+                amount=amount,  # ✅ Montant selon le type de QR
+                currency='MRU',
+                description=f"Paiement QR Code: {qr_code.name} ({'Montant fixe' if qr_code.qr_type == 'static' else 'Montant variable'})",
+                customer_phone=serializer.validated_data['phone_number'],
+                customer_wallet_phone=serializer.validated_data['phone_number'],
+                status='wallet_selected',
+                expires_at=timezone.now() + timezone.timedelta(minutes=15)
+            )
+            
+            # Générer un code OTP
+            otp_code = ''.join(random.choices(string.digits, k=4))
+            
+            qr_otp = QRPaymentOTP.objects.create(
+                qr_payment_session=payment_session,
+                phone_number=serializer.validated_data['phone_number'],
+                wallet_provider=wallet_provider,
+                code=otp_code,
+                purpose='transaction'
+            )
+            
+            # Marquer la session comme OTP envoyé
+            payment_session.status = 'otp_sent'
+            payment_session.save()
+            
+            # Simulation d'envoi OTP
+            print(f"SMS to {serializer.validated_data['phone_number']}: Your QR payment OTP is {otp_code}")
+            print(f"QR Type: {qr_code.qr_type} | Amount: {amount} MRU")
+            
+            return Response({
+                'session_id': payment_session.session_id,
+                'qr_type': qr_code.qr_type,  # ✅ AJOUT
+                'amount': float(amount),  # ✅ AJOUT - montant final utilisé
+                'otp_sent': True,
+                'message': f'Code OTP envoyé au {serializer.validated_data["phone_number"]}',
+                'expires_in': 15
+            }, status=status.HTTP_201_CREATED)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+    except QRCode.DoesNotExist:
+        return Response({
+            'error': 'QR Code introuvable'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def verify_qr_otp_and_pay(request, session_id):
+    """
+    POST: Vérifier l'OTP et finaliser le paiement QR
+    """
+    try:
+        payment_session = get_object_or_404(QRPaymentSession, session_id=session_id)
+        
+        if payment_session.status not in ['otp_sent', 'processing']:
+            return Response({
+                'error': 'Cette session de paiement ne peut plus être traitée'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if payment_session.is_expired():
+            payment_session.status = 'expired'
+            payment_session.save()
+            return Response({
+                'error': 'Session expirée'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        serializer = QRPaymentOTPVerifySerializer(data=request.data)
+        
+        if serializer.is_valid():
+            otp_code = serializer.validated_data['otp_code']
+            
+            # Récupérer l'OTP le plus récent pour cette session
+            try:
+                qr_otp = payment_session.qr_otps.filter(
+                    is_used=False
+                ).order_by('-created_at').first()
+                
+                if not qr_otp:
+                    return Response({
+                        'error': 'Aucun code OTP valide trouvé'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                
+                if qr_otp.is_expired():
+                    return Response({
+                        'error': 'Code OTP expiré'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                
+                # Vérifier l'OTP (1234 pour test)
+                if otp_code == qr_otp.code or otp_code == '1234':
+                    # Marquer l'OTP comme utilisé
+                    qr_otp.is_used = True
+                    qr_otp.save()
+                    
+                    # Mettre à jour la session
+                    payment_session.status = 'processing'
+                    payment_session.save()
+                    
+                    # Créer la transaction
+                    from decimal import Decimal
+                    transaction_obj = Transaction.objects.create(
+                        payment_session=payment_session,
+                        transaction_type='payment',
+                        sender_wallet_phone=payment_session.customer_wallet_phone,
+                        sender_wallet_provider=qr_otp.wallet_provider,
+                        merchant=payment_session.merchant,
+                        amount=payment_session.amount,
+                        currency=payment_session.currency,
+                        fee_amount=Decimal('0'),  # Pas de frais pour QR direct
+                        description=f"Paiement QR: {payment_session.qr_code.name}",
+                        status='completed',
+                        completed_at=timezone.now()
+                    )
+                    
+                    # Finaliser la session
+                    payment_session.status = 'completed'
+                    payment_session.completed_at = timezone.now()
+                    payment_session.save()
+                    
+                    # Mettre à jour les statistiques du QR code
+                    qr_code = payment_session.qr_code
+                    qr_code.total_revenue += payment_session.amount
+                    qr_code.save()
+                    
+                    return Response({
+                        'success': True,
+                        'session_id': payment_session.session_id,
+                        'transaction_id': transaction_obj.transaction_id,
+                        'amount': payment_session.amount,
+                        'currency': payment_session.currency,
+                        'merchant_name': payment_session.merchant.business_name or payment_session.merchant.nom_complet,
+                        'message': 'Paiement effectué avec succès'
+                    })
+                else:
+                    return Response({
+                        'error': 'Code OTP invalide'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                
+            except Exception as e:
+                print(f"Error during OTP verification: {e}")
+                return Response({
+                    'error': 'Erreur lors de la vérification OTP'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+    except QRPaymentSession.DoesNotExist:
+        return Response({
+            'error': 'Session de paiement introuvable'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def qr_payments_history(request):
+    """
+    GET: Historique des paiements QR du merchant
+    """
+    if request.user.user_type != 'merchant':
+        return Response({'error': 'Accès reservé aux merchants'}, status=status.HTTP_403_FORBIDDEN)
+    
+    qr_codes = QRCode.objects.filter(merchant=request.user)
+    qr_sessions = QRPaymentSession.objects.filter(
+        qr_code__in=qr_codes,
+        status='completed'
+    ).order_by('-completed_at')
+    
+    serializer = QRPaymentSessionSerializer(qr_sessions, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def get_wallet_providers(request):
+    """
+    GET: Liste des portefeuilles supportés
+    """
+    providers = WalletProvider.objects.filter(is_active=True)
+    data = []
+    
+    for provider in providers:
+        data.append({
+            'id': provider.name,
+            'name': provider.display_name,
+            'logo_url': provider.logo_url,
+            'supports_otp': provider.supports_otp
+        })
+    
+    return Response(data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def qr_code_stats(request):
+    """
+    GET: Statistiques des QR codes du merchant
+    """
+    if request.user.user_type != 'merchant':
+        return Response({'error': 'Accès reservé aux merchants'}, status=status.HTTP_403_FORBIDDEN)
+    
+    user_qr_codes = QRCode.objects.filter(merchant=request.user)
+    
+    stats = {
+        'total_qrs': user_qr_codes.count(),
+        'active_qrs': user_qr_codes.filter(status='active').count(),
+        'total_scans': user_qr_codes.aggregate(Sum('scans_count'))['scans_count__sum'] or 0,
+        'total_revenue': user_qr_codes.aggregate(Sum('total_revenue'))['total_revenue__sum'] or 0
+    }
+    
+    return Response(stats)
+    """
+    GET: Liste des portefeuilles supportés
+    """
+    providers = WalletProvider.objects.filter(is_active=True)
+    data = []
+    
+    for provider in providers:
+        data.append({
+            'id': provider.name,
+            'name': provider.display_name,
+            'logo_url': provider.logo_url,
+            'supports_otp': provider.supports_otp
+        })
+    
+    return Response(data)
+
+

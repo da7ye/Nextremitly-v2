@@ -12,7 +12,11 @@ class IsBuyer(permissions.BasePermission):
             request.user.is_authenticated and 
             request.user.user_type == 'buyer'
         )
-
+# Dans votre modèle QRCode
+class Meta:
+    permissions = [
+        ('delete_qrcode', 'Peut supprimer un QR code'),
+    ]
 
 class IsMerchant(permissions.BasePermission):
     """

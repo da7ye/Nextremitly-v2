@@ -3,7 +3,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
-from .models import CustUser, Buyer, Merchant, WalletVerificationOTP
+from .models import CustUser, Buyer, Merchant, WalletVerificationOTP,QRCode,QRPaymentSession
 import random
 import string
 
@@ -425,3 +425,137 @@ class WalletVerificationOTPSerializer(serializers.ModelSerializer):
     
     def get_is_expired(self, obj):
         return obj.is_expired()
+    
+
+
+
+
+
+
+from .models import QRCode, QRPaymentSession, QRPaymentOTP, WalletProvider
+
+
+
+class QRCodeSerializer(serializers.ModelSerializer):
+    qr_type = serializers.CharField()
+    qr_url = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = QRCode
+        fields = [
+            'id', 'name', 'description', 'qr_type', 'status',
+            'created_at', 'scans_count', 'total_revenue', 'qr_url', 'fixed_amount'
+        ]
+        read_only_fields = ['id', 'created_at', 'scans_count', 'total_revenue']
+    
+    def get_qr_url(self, obj):
+        return f"http://localhost:5173/qr-codes/qr/{obj.id}"
+    
+    def validate(self, attrs):
+        # Validation spécifique pour QR statique
+        if attrs.get('qr_type') == 'static':
+            if not attrs.get('fixed_amount'):
+                raise serializers.ValidationError({
+                    'fixed_amount': 'Le montant fixe est requis pour un QR code statique'
+                })
+            if attrs.get('fixed_amount') <= 0:
+                raise serializers.ValidationError({
+                    'fixed_amount': 'Le montant doit être supérieur à 0'
+                })
+            if attrs.get('fixed_amount') > 1000000:
+                raise serializers.ValidationError({
+                    'fixed_amount': 'Le montant ne peut pas dépasser 1 000 000 MRU'
+                })
+        else:
+            # Pour QR dynamique, s'assurer que fixed_amount est null
+            attrs['fixed_amount'] = None
+        
+        return attrs
+    
+    def create(self, validated_data):
+        user = self.context['request'].user
+        try:
+            merchant = Merchant.objects.get(id=user.id)
+            validated_data['merchant'] = merchant
+            
+            print(f"✅ Création QR pour merchant: {merchant.business_name}")
+            print(f"✅ Type: {validated_data.get('qr_type')}")
+            print(f"✅ Montant fixe: {validated_data.get('fixed_amount')}")
+            
+            instance = QRCode.objects.create(
+                merchant=merchant,
+                name=validated_data['name'],
+                qr_type=validated_data['qr_type'],
+                description=validated_data.get('description', ''),
+                fixed_amount=validated_data.get('fixed_amount'),
+                status='active',
+                scans_count=0,
+                total_revenue=0
+            )
+            
+            print(f"✅ QR créé avec ID: {instance.id}")
+            return instance
+            
+        except Merchant.DoesNotExist:
+            raise serializers.ValidationError("L'utilisateur doit être un merchant pour créer un QR Code")
+
+
+class QRCodeStatsSerializer(serializers.Serializer):
+    total_qrs = serializers.IntegerField()
+    active_qrs = serializers.IntegerField()
+    total_scans = serializers.IntegerField()
+    total_revenue = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+
+class QRPaymentInitiateSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)  # Optionnel pour QR statique
+    wallet_type = serializers.CharField(max_length=50)
+    phone_number = serializers.CharField(max_length=20)
+    customer_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    
+    def validate(self, attrs):
+        # Le montant sera validé dans la vue selon le type de QR
+        return attrs
+    
+    def validate_wallet_type(self, value):
+        if not WalletProvider.objects.filter(name=value, is_active=True).exists():
+            raise serializers.ValidationError("Portefeuille non supporté")
+        return value
+    
+    def validate_phone_number(self, value):
+        import re
+        clean_value = value.replace(' ', '').replace('+222', '')
+        if not re.match(r'^[2-4]\d{7}$', clean_value):
+            raise serializers.ValidationError("Numéro de téléphone invalide")
+        return clean_value
+
+
+class QRPaymentSessionSerializer(serializers.ModelSerializer):
+    qr_code_name = serializers.CharField(source='qr_code.name', read_only=True)
+    merchant_name = serializers.CharField(source='merchant.business_name', read_only=True)
+    
+    class Meta:
+        model = QRPaymentSession
+        fields = [
+            'session_id', 'amount', 'currency', 'customer_phone', 'customer_wallet_phone',
+            'status', 'created_at', 'completed_at', 'qr_code_name', 'merchant_name'
+        ]
+
+
+class QRPaymentOTPVerifySerializer(serializers.Serializer):
+    otp_code = serializers.CharField(max_length=6)
+    
+    def validate_otp_code(self, value):
+        if len(value) not in [4, 6]:  # Support both 4 and 6 digit OTPs
+            raise serializers.ValidationError("Le code OTP doit contenir 4 ou 6 chiffres")
+        if not value.isdigit():
+            raise serializers.ValidationError("Le code OTP ne doit contenir que des chiffres")
+        return value
+    otp_code = serializers.CharField(max_length=6)
+    
+    def validate_otp_code(self, value):
+        if len(value) != 4:
+            raise serializers.ValidationError("Le code OTP doit contenir 4 chiffres")
+        if not value.isdigit():
+            raise serializers.ValidationError("Le code OTP ne doit contenir que des chiffres")
+        return value
