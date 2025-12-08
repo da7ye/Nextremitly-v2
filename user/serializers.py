@@ -1,4 +1,6 @@
 # serializers.py
+from django.conf import settings
+import qrcode
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
@@ -6,6 +8,8 @@ from django.core.exceptions import ValidationError
 from .models import CustUser, Buyer, Merchant, WalletVerificationOTP,QRCode,QRPaymentSession
 import random
 import string
+import base64
+from io import BytesIO
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -437,39 +441,67 @@ from .models import QRCode, QRPaymentSession, QRPaymentOTP, WalletProvider
 
 
 class QRCodeSerializer(serializers.ModelSerializer):
-    qr_type = serializers.CharField()
     qr_url = serializers.SerializerMethodField()
-    
+    qr_image = serializers.SerializerMethodField()
+
     class Meta:
         model = QRCode
         fields = [
             'id', 'name', 'description', 'qr_type', 'status',
-            'created_at', 'scans_count', 'total_revenue', 'qr_url', 'fixed_amount'
+            'created_at', 'scans_count', 'total_revenue',
+            'qr_url', 'fixed_amount', 'qr_image'
         ]
         read_only_fields = ['id', 'created_at', 'scans_count', 'total_revenue']
-    
+
     def get_qr_url(self, obj):
-        return f"http://localhost:5173/qr-codes/qr/{obj.id}"
+        frontend_url = getattr(settings, "FRONTEND_BASE_URL", "http://localhost:5173")
+        return f"{frontend_url}/public/qr/{obj.id}"
+
+    def get_qr_image(self, obj):
+        qr_url = self.get_qr_url(obj)
+        qr_img = qrcode.make(qr_url)
+        buffer = BytesIO()
+        qr_img.save(buffer, format="PNG")
+        img_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        return f"data:image/png;base64,{img_str}"
     
+    # Dans serializers.py - QRCodeSerializer
+
     def validate(self, attrs):
-        # Validation spécifique pour QR statique
+         # Validation spécifique pour QR statique
         if attrs.get('qr_type') == 'static':
-            if not attrs.get('fixed_amount'):
+            fixed_amount = attrs.get('fixed_amount')
+            
+            # ✅ Gérer le cas où fixed_amount est None, vide ou 0
+            if not fixed_amount or fixed_amount == '' or fixed_amount == 0:
                 raise serializers.ValidationError({
                     'fixed_amount': 'Le montant fixe est requis pour un QR code statique'
                 })
-            if attrs.get('fixed_amount') <= 0:
+            
+            # Convertir en Decimal si c'est une chaîne
+            try:
+                from decimal import Decimal
+                amount = Decimal(str(fixed_amount))
+            except:
+                raise serializers.ValidationError({
+                    'fixed_amount': 'Le montant doit être un nombre valide'
+                })
+            
+            if amount <= 0:
                 raise serializers.ValidationError({
                     'fixed_amount': 'Le montant doit être supérieur à 0'
                 })
-            if attrs.get('fixed_amount') > 1000000:
+            if amount > 1000000:
                 raise serializers.ValidationError({
                     'fixed_amount': 'Le montant ne peut pas dépasser 1 000 000 MRU'
                 })
+            
+            # ✅ Stocker le montant converti
+            attrs['fixed_amount'] = amount
         else:
-            # Pour QR dynamique, s'assurer que fixed_amount est null
-            attrs['fixed_amount'] = None
-        
+        # Pour QR dynamique, s'assurer que fixed_amount est null
+          attrs['fixed_amount'] = None
+    
         return attrs
     
     def create(self, validated_data):
@@ -478,9 +510,9 @@ class QRCodeSerializer(serializers.ModelSerializer):
             merchant = Merchant.objects.get(id=user.id)
             validated_data['merchant'] = merchant
             
-            print(f"✅ Création QR pour merchant: {merchant.business_name}")
-            print(f"✅ Type: {validated_data.get('qr_type')}")
-            print(f"✅ Montant fixe: {validated_data.get('fixed_amount')}")
+            print(f" Création QR pour merchant: {merchant.business_name}")
+            print(f" Type: {validated_data.get('qr_type')}")
+            print(f" Montant fixe: {validated_data.get('fixed_amount')}")
             
             instance = QRCode.objects.create(
                 merchant=merchant,
@@ -493,7 +525,7 @@ class QRCodeSerializer(serializers.ModelSerializer):
                 total_revenue=0
             )
             
-            print(f"✅ QR créé avec ID: {instance.id}")
+            print(f" QR créé avec ID: {instance.id}")
             return instance
             
         except Merchant.DoesNotExist:

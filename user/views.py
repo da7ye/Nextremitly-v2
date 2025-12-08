@@ -1494,27 +1494,19 @@ class QRCodeListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        if self.request.user.user_type == 'merchant':
-            try:
-                merchant = Merchant.objects.get(id=self.request.user.id)
-                queryset = QRCode.objects.filter(merchant=merchant)
-                print(f"🔍 Backend: Found {queryset.count()} QR codes for merchant {merchant.id}")
-                for qr in queryset:
-                    print(f"  - {qr.name} ({qr.id})")
-                return queryset
-            except Merchant.DoesNotExist:
-                print("❌ Backend: Merchant not found")
-                return QRCode.objects.none()
-        print("❌ Backend: User is not merchant")
-        return QRCode.objects.none()
+       user = self.request.user
+       if user.user_type == 'merchant':
+         return QRCode.objects.filter(merchant_id=user.id)
+       return QRCode.objects.none()
+
     
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
         serializer = self.get_serializer(queryset, many=True)
         
-        print(f"🔍 Backend: Serialized data: {serializer.data}")
-        print(f"🔍 Backend: Data type: {type(serializer.data)}")
-        print(f"🔍 Backend: Data length: {len(serializer.data) if isinstance(serializer.data, list) else 'not a list'}")
+        print(f" Backend: Serialized data: {serializer.data}")
+        print(f" Backend: Data type: {type(serializer.data)}")
+        print(f" Backend: Data length: {len(serializer.data) if isinstance(serializer.data, list) else 'not a list'}")
         
         return Response(serializer.data)
 
@@ -1538,7 +1530,7 @@ class QRCodeDetailView(generics.RetrieveUpdateDestroyAPIView):
         return QRCode.objects.filter(merchant=self.request.user)
 
     def destroy(self, request, *args, **kwargs):
-        try:
+        # try:
             instance = self.get_object()
             qr_id = instance.id
             merchant_id = request.user.id
@@ -1560,19 +1552,41 @@ class QRCodeDetailView(generics.RetrieveUpdateDestroyAPIView):
                 status=status.HTTP_200_OK
             )
 
-        except QRCode.DoesNotExist:
-            print(f"❌ QR code introuvable lors de la suppression")
-            return Response(
-                {"error": "QR code introuvable"},
-                status=status.HTTP_404_NOT_FOUND
-            )
+        # except QRCode.DoesNotExist:
+        #     print(f" QR code introuvable lors de la suppression")
+        #     return Response(
+        #         {"error": "QR code introuvable"},
+        #         status=status.HTTP_404_NOT_FOUND
+        #     )
 
-        except Exception as e:
-            print(f"❌ Erreur suppression QR code: {str(e)}")
-            return Response(
-                {"error": "Une erreur est survenue lors de la suppression"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        # except Exception as e:
+        #     print(f" Erreur suppression QR code: {str(e)}")
+        #     return Response(
+        #         {"error": "Une erreur est survenue lors de la suppression"},
+        #         status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        #     )
+        
+
+
+
+@api_view(['GET'])
+def validate_qr(request, qr_id):
+        try:
+            qr = QRCode.objects.get(id=qr_id)  
+
+            return Response({
+                "isValid": True,
+                "qr_id": qr.id,  
+                "qr_type": qr.qr_type,
+                "fixed_amount": qr.fixed_amount,
+                "status": qr.status,
+                "merchantName": qr.merchant.name if qr.merchant else "NextRemitly",
+                "qr_image": getattr(qr, "qr_image", None)
+            })
+
+        except QRCode.DoesNotExist:
+            return Response({"isValid": False, "error": "QR Code invalide"}, status=404)
+        
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -1605,6 +1619,7 @@ def qr_code_stats(request):
 def public_qr_detail(request, qr_id):
     """
     GET: Récupérer les détails publics d'un QR code (pour scan)
+    ✅ FIXED: Added count_scan parameter to prevent double counting
     """
     try:
         print(f"🔍 Recherche QR Code: {qr_id}")
@@ -1619,17 +1634,23 @@ def public_qr_detail(request, qr_id):
                 'is_valid': False
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Incrémenter le compteur de scans
-        qr_code.scans_count += 1
-        qr_code.save()
+        # ✅ FIX: Incrémenter le compteur SEULEMENT si count_scan=true
+        count_scan = request.GET.get('count_scan', 'true').lower() == 'true'
+        
+        if count_scan:
+            qr_code.scans_count += 1
+            qr_code.save()
+            print(f"✅ Scan compté: {qr_code.scans_count}")
+        else:
+            print(f"⚠️ Validation call - scan non compté (actuel: {qr_code.scans_count})")
         
         data = {
             'id': qr_code.id,
             'merchant_name': qr_code.merchant.business_name or qr_code.merchant.nom_complet,
             'merchant_id': qr_code.merchant.id,
-            'qr_type': qr_code.qr_type,  # ✅ AJOUT
-            'fixed_amount': float(qr_code.fixed_amount) if qr_code.fixed_amount else None,  # ✅ AJOUT
-            'description': qr_code.description,  # ✅ AJOUT
+            'qr_type': qr_code.qr_type,
+            'fixed_amount': float(qr_code.fixed_amount) if qr_code.fixed_amount else None,
+            'description': qr_code.description,
             'is_valid': True,
             'is_active': qr_code.status == 'active'
         }
@@ -1649,6 +1670,39 @@ def public_qr_detail(request, qr_id):
             'error': 'Erreur serveur',
             'is_valid': False
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])  
+def public_qr_wallets(request, qr_id):
+    """
+    GET /public/qr/<qr_id>/wallets/
+    Retourne les MerchantWallets (actives) du merchant propriétaire du QR code.
+    """
+    try:
+        qr_code = get_object_or_404(QRCode, id=qr_id)
+        merchant = qr_code.merchant
+
+        # Récupérer wallets actifs du merchant et joindre provider
+        wallets = MerchantWallet.objects.filter(merchant=merchant, is_active=True).select_related('provider')
+
+        serializer = MerchantWalletSerializer(wallets, many=True)
+        return Response(serializer.data)
+
+    except QRCode.DoesNotExist:
+        return Response({'error': 'QR Code introuvable'}, status=404)
+    except Exception as e:
+        print(f"Error in public_qr_wallets: {e}")
+        return Response({'error': 'Erreur serveur'}, status=500)
+
+
+
+
+
+
+
 
 
 @api_view(['POST'])
@@ -1677,7 +1731,7 @@ def initiate_qr_payment(request, qr_id):
                     }, status=status.HTTP_400_BAD_REQUEST)
                 
                 amount = qr_code.fixed_amount
-                print(f"💰 QR Statique - Montant fixe utilisé: {amount} MRU")
+                print(f" QR Statique - Montant fixe utilisé: {amount} MRU")
                 
             else:
                 # Pour QR dynamique : utiliser le montant fourni par le client
@@ -1697,7 +1751,7 @@ def initiate_qr_payment(request, qr_id):
                         'error': 'Le montant ne peut pas dépasser 1 000 000 MRU'
                     }, status=status.HTTP_400_BAD_REQUEST)
                 
-                print(f"💰 QR Dynamique - Montant client: {amount} MRU")
+                print(f" QR Dynamique - Montant client: {amount} MRU")
             
             # Récupérer le wallet provider
             try:
@@ -1883,59 +1937,45 @@ def qr_payments_history(request):
     return Response(serializer.data)
 
 
-@api_view(['GET'])
-@permission_classes([AllowAny])
-def get_wallet_providers(request):
-    """
-    GET: Liste des portefeuilles supportés
-    """
-    providers = WalletProvider.objects.filter(is_active=True)
-    data = []
+# @api_view(['GET'])
+# @permission_classes([AllowAny])
+# def get_wallet_providers(request):
+#     """
+#     GET: Liste des portefeuilles supportés
+#     """
+#     providers = WalletProvider.objects.filter(is_active=True)
+#     data = []
     
-    for provider in providers:
-        data.append({
-            'id': provider.name,
-            'name': provider.display_name,
-            'logo_url': provider.logo_url,
-            'supports_otp': provider.supports_otp
-        })
+#     for provider in providers:
+#         data.append({
+#             'id': provider.name,
+#             'name': provider.display_name,
+#             'logo_url': provider.logo_url,
+#             'supports_otp': provider.supports_otp
+#         })
     
-    return Response(data)
+#     return Response(data)
 
 
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def qr_code_stats(request):
-    """
-    GET: Statistiques des QR codes du merchant
-    """
-    if request.user.user_type != 'merchant':
-        return Response({'error': 'Accès reservé aux merchants'}, status=status.HTTP_403_FORBIDDEN)
+# @api_view(['GET'])
+# @permission_classes([IsAuthenticated])
+# def qr_code_stats(request):
+#     """
+#     GET: Statistiques des QR codes du merchant
+#     """
+#     if request.user.user_type != 'merchant':
+#         return Response({'error': 'Accès reservé aux merchants'}, status=status.HTTP_403_FORBIDDEN)
     
-    user_qr_codes = QRCode.objects.filter(merchant=request.user)
+#     user_qr_codes = QRCode.objects.filter(merchant=request.user)
     
-    stats = {
-        'total_qrs': user_qr_codes.count(),
-        'active_qrs': user_qr_codes.filter(status='active').count(),
-        'total_scans': user_qr_codes.aggregate(Sum('scans_count'))['scans_count__sum'] or 0,
-        'total_revenue': user_qr_codes.aggregate(Sum('total_revenue'))['total_revenue__sum'] or 0
-    }
+#     stats = {
+#         'total_qrs': user_qr_codes.count(),
+#         'active_qrs': user_qr_codes.filter(status='active').count(),
+#         'total_scans': user_qr_codes.aggregate(Sum('scans_count'))['scans_count__sum'] or 0,
+#         'total_revenue': user_qr_codes.aggregate(Sum('total_revenue'))['total_revenue__sum'] or 0
+#     }
     
-    return Response(stats)
-    """
-    GET: Liste des portefeuilles supportés
-    """
-    providers = WalletProvider.objects.filter(is_active=True)
-    data = []
-    
-    for provider in providers:
-        data.append({
-            'id': provider.name,
-            'name': provider.display_name,
-            'logo_url': provider.logo_url,
-            'supports_otp': provider.supports_otp
-        })
-    
-    return Response(data)
+    # return Response(stats)
+   
 
 

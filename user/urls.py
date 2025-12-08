@@ -3,9 +3,9 @@ from django.urls import path
 from .views import (
     BuyerRegistrationView, MerchantRegistrationView, LoginView, LogoutView,
     UserProfileView, PasswordChangeView, PasswordResetRequestView,
-    PasswordResetConfirmView, EmailVerificationView, ResendOTPView,
+    PasswordResetConfirmView, EmailVerificationView, ResendOTPView, public_qr_wallets,
     user_status,QRCodeListCreateView,QRCodeDetailView,qr_code_stats,qr_payments_history, public_qr_detail,initiate_qr_payment,
-    verify_qr_otp_and_pay,get_wallet_providers
+    verify_qr_otp_and_pay,
   
 )
 import random
@@ -45,7 +45,7 @@ urlpatterns = [
     path('auth/email/resend-otp/', ResendOTPView.as_view(), name='resend-otp'),
 
      
-   path('qr-codes/', QRCodeListCreateView.as_view(), name='qr_codes_list_create'),
+    path('qr-codes/', QRCodeListCreateView.as_view(), name='qr_codes_list_create'),
     path('qr-codes/<str:id>/', QRCodeDetailView.as_view(), name='qr_code_detail'),
     path('qr-codes/stats/overview/', qr_code_stats, name='qr_code_stats'),
     path('qr-payments/history/', qr_payments_history, name='qr_payments_history'),
@@ -56,6 +56,7 @@ urlpatterns = [
     path('public/qr/<str:qr_id>/', public_qr_detail, name='public_qr_detail'),
     path('public/qr/<str:qr_id>/pay/', initiate_qr_payment, name='initiate_qr_payment'),
     path('public/qr-sessions/<uuid:session_id>/verify/', verify_qr_otp_and_pay, name='verify_qr_otp'),
-    path('public/wallet-providers/', get_wallet_providers, name='wallet_providers'),
+    # path('public/wallet-providers/', get_wallet_providers, name='wallet_providers'),
+    path('public/qr/<str:qr_id>/wallets/', public_qr_wallets, name='public_qr_wallets'),
     
 ]

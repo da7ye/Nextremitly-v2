@@ -14,8 +14,25 @@ from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+import os
+import environ
 
 
+env = environ.Env(
+    # Set casting and default values
+    DEBUG=(bool, False)
+)
+
+environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+DEBUG = env.bool('DEBUG', default=False)
+# SECRET_KEY = env('SECRET_KEY')
+DATABASES = {
+    'default': env.db(), 
+}
+
+SECRET_KEY = env('SECRET_KEY', default='django-insecure-secret')
+DEBUG = env.bool('DEBUG', default=True)
+ALLOWED_HOSTS = ['*']
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
@@ -131,12 +148,12 @@ WSGI_APPLICATION = 'Nextremitly.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.sqlite3',
+#         'NAME': BASE_DIR / 'db.sqlite3',
+#     }
+# }
 
 
 # Password validation
@@ -177,7 +194,10 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = '/vol/web/static'
 
+
+MEDIA_ROOT = '/vol/web/media'
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
@@ -240,6 +260,7 @@ BANK_APIS = {
         'timeout': 30,
     }
 }
+FRONTEND_BASE_URL = "http://localhost:5173"  # pendant le développement
 
 # ! no need i think just in case
 # Cache Configuration (optionnel - pour Redis si vous l'installez plus tard)

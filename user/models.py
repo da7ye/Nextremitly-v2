@@ -1,10 +1,19 @@
+from django.conf import settings
 from django.db import models
 from django.contrib.auth.base_user import  BaseUserManager
 from django.contrib.auth.models import AbstractUser, Group, Permission
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
 from django.utils import timezone
+import base64
+from io import BytesIO
+import uuid
 
+
+
+
+
+import qrcode
 
 
 class CustomAccountManager(BaseUserManager):
@@ -469,6 +478,7 @@ class WalletVerificationOTP(OTPBase):
         verbose_name = "Wallet Verification OTP"
         verbose_name_plural = "Wallet Verification OTPs"
 
+
 class QRCode(models.Model):
     """QR Code pour paiements directs en magasin"""
     qr_type = models.CharField(max_length=20, choices=[
@@ -509,14 +519,24 @@ class QRCode(models.Model):
         return f"{self.name} ({self.id})"
     
     def save(self, *args, **kwargs):
+    # Génération d’un ID unique si non défini
         if not self.id:
             self.id = f"qr_{uuid.uuid4().hex[:8]}"
+        
+        # Génération de l’URL du QR
+        frontend_url = getattr(settings, "FRONTEND_BASE_URL", "http://localhost:5173")
+        self.qr_url = f"{frontend_url}/public/qr/{self.id}"
+
+        # Génération de l’image du QR code
+        qr_img = qrcode.make(self.qr_url)
+        buffer = BytesIO()
+        qr_img.save(buffer, format="PNG")
+        img_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        self.qr_image = f"data:image/png;base64,{img_str}"
+
+        # Sauvegarde finale
         super().save(*args, **kwargs)
-    
-    @property
-    def qr_url(self):
-        return f"https://nextremitly.com/qr/{self.id}"
-    
+
     @property
     def is_valid(self):
         if self.status != 'active':
