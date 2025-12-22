@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verify Your Nextremitly Account</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7fa;">
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f4f7fa; padding: 40px 0;">
+        <tr>
+            <td align="center">
+                <!-- Main Container -->
+                <table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); overflow: hidden;">
+                    
+                    <!-- Header with Brand Colors -->
+                    <tr>
+                        <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 30px; text-align: center;">
+                            <!-- Lightning Icon + Logo -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                <tr>
+                                    <td align="center">
+                                        <!-- Lightning Icon SVG -->
+                                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; margin-bottom: 10px;">
+                                            <path d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                        </svg>
+                                        
+                                        <!-- Brand Name -->
+                                        <h1 style="color: #ffffff; margin: 10px 0 0 0; font-size: 32px; font-weight: 700; letter-spacing: -0.5px;">
+                                            <span style="color: #3b82f6;">Next</span><span style="color: #10b981;">remitly</span>
+                                        </h1>
+                                        <p style="color: #e0e7ff; margin: 8px 0 0 0; font-size: 14px;">
+                                            {{ company_tagline }}
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    
+                    <!-- Content Body -->
+                    <tr>
+                        <td style="padding: 40px 30px;">
+                            <h2 style="color: #1a202c; margin: 0 0 20px 0; font-size: 24px; font-weight: 600;">
+                                Welcome, {{ user_name }}! 👋
+                            </h2>
+                            
+                            <p style="color: #4a5568; font-size: 16px; line-height: 1.6; margin: 0 0 25px 0;">
+                                Thank you for registering with <strong><span style="color: #3b82f6;">Next</span><span style="color: #10b981;">remitly</span></strong>. To complete your account verification, please use the code below:
+                            </p>
+                            
+                            <!-- OTP Code Box -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 30px 0;">
+                                <tr>
+                                    <td align="center">
+                                        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; padding: 30px; display: inline-block;">
+                                            <p style="color: #ffffff; font-size: 14px; margin: 0 0 10px 0; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">
+                                                Your Verification Code
+                                            </p>
+                                            <p style="color: #ffffff; font-size: 42px; font-weight: 700; margin: 0; letter-spacing: 8px; font-family: 'Courier New', monospace;">
+                                                {{ otp_code }}
+                                            </p>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </table>
+                            
+                            <!-- Important Info Box -->
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #fff5f5; border-left: 4px solid #f56565; border-radius: 8px; padding: 20px; margin: 25px 0;">
+                                <tr>
+                                    <td>
+                                        <p style="color: #742a2a; font-size: 14px; margin: 0; line-height: 1.6;">
+                                            ⏰ <strong>Important:</strong> This code will expire in <strong>{{ expiry_minutes }} minutes</strong>. Please verify your account as soon as possible.
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                            
+                            <p style="color: #718096; font-size: 14px; line-height: 1.6; margin: 25px 0 0 0;">
+                                If you didn't request this verification code, please ignore this email or contact our support team if you have concerns.
+                            </p>
+                        </td>
+                    </tr>
+                    
+                    <!-- Footer -->
+                    <tr>
+                        <td style="background-color: #f7fafc; padding: 30px; border-top: 1px solid #e2e8f0;">
+                            <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                                <tr>
+                                    <td align="center">
+                                        <p style="color: #a0aec0; font-size: 13px; margin: 0 0 8px 0;">
+                                            Need help? Contact us at <a href="mailto:{{ support_email }}" style="color: #667eea; text-decoration: none;">{{ support_email }}</a>
+                                        </p>
+                                        <p style="color: #cbd5e0; font-size: 12px; margin: 0;">
+                                            © {{ current_year }} <span style="color: #3b82f6;">Next</span><span style="color: #10b981;">remitly</span>. All rights reserved.<br>
+                                            {{ company_location }}
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
